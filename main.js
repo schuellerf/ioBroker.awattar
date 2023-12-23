@@ -89,6 +89,7 @@ async function main() {
     // adapter.log.info("Loading Threshold End: " + adapter.config.LoadingThresholdEnd);
     
     const url = adapter.config.aWATTarApiUrl;
+    const urlPower = adapter.config.aWATTarApiPowerUrl;
     const mwst = parseInt(adapter.config.MWstRate);
     const mwstRate = (mwst + 100) / 100;
     const workRate = parseFloat(adapter.config.WorkRate);
@@ -106,6 +107,7 @@ async function main() {
     let epochToday = new Date(heute.getFullYear(),heute.getMonth(),heute.getDate()).getTime();
     let epochTomorrow = new Date(heute.getFullYear(),heute.getMonth(),heute.getDate()+2).getTime() - 1;
     let urlEpoch = url.concat("?start=", epochToday.toString(), "&end=", epochTomorrow.toString());
+    let urlPowerEpoch = urlPower.concat("?start=", epochToday.toString(), "&end=", epochTomorrow.toString());
 
     adapter.log.debug('local request started');
 
@@ -136,11 +138,42 @@ async function main() {
         }
        return;
      }
+
+    //get data from awattar power api
+    let responsePower = null;
+    try {
+        responsePower = await axios({
+            method: 'get',
+            baseURL: urlPowerEpoch,
+            timeout: 10000,
+            responseType: 'json'
+        });
+    } catch (error) {
+        (error) => {
+            if (error.response) {
+                // The request was made and the server responded with a status code
+
+                this.log.warn('received error ' + error.response.status + ' response from local sensor ' + sensorIdentifier + ' with content: ' + JSON.stringify(error.response.data));
+            } else if (error.request) {
+                // The request was made but no response was received
+                // `error.request` is an instance of XMLHttpRequest in the browser and an instance of
+                // http.ClientRequest in node.js<div></div>
+                this.log.warn(error.message);
+            } else {
+                // Something happened in setting up the request that triggered an Error
+                this.log.warn(error.message);
+            }
+        }
+    }
  
     const content = response.data;
+    const contentPower = responsePower?.data;
 
     adapter.log.debug('local request done');
     adapter.log.debug('received data (' + response.status + '): ' + JSON.stringify(content));
+    if (contentPower) {
+        adapter.log.debug('received power data (' + responsePower.status + '): ' + JSON.stringify(contentPower));
+    }
 
     //write raw data to data point
     await adapter.setObjectNotExistsAsync("Rawdata", {
@@ -158,6 +191,12 @@ async function main() {
     await adapter.setStateAsync("Rawdata", JSON.stringify(content), true);
 
     let array = content.data;
+    let arrayPower = contentPower?.data;
+    if (arrayPower && array.length != arrayPower.length) {
+        // that should not happen, but we'll ignore the values if it would happen
+        arrayPower = null;
+    }
+
 
     for(let i = 0; i < array.length; i++) {
         let stateBaseName = "prices." + i + ".";
@@ -291,6 +330,32 @@ async function main() {
             native: {}
         });
 
+        await adapter.setObjectNotExistsAsync(stateBaseName + "solar", {
+            type: "state",
+            common: {
+                name: "Sonnenenergie",
+                type: "number",
+                role: "value",
+                unit: "kWh",
+                read: true,
+                write: false
+            },
+            native: {}
+        });
+
+        await adapter.setObjectNotExistsAsync(stateBaseName + "wind", {
+            type: "state",
+            common: {
+                name: "Windenergie",
+                type: "number",
+                role: "value",
+                unit: "kWh",
+                read: true,
+                write: false
+            },
+            native: {}
+        });
+
         //calculate prices / timestamps
 		let startTs = array[i].start_timestamp;
         let start = new Date(startTs);
@@ -304,6 +369,8 @@ async function main() {
         let nettoFullPriceKwh = nettoPriceKwh + (math.abs(nettoPriceKwh) * absPriceFactor) + constantCosts;
         let bruttoPriceKwh = nettoFullPriceKwh * mwstRate;
         let totalPriceKwh = bruttoPriceKwh + workRate ;
+        let solar = (arrayPower && arrayPower[i]?.solar) || 0;
+        let wind = (arrayPower && arrayPower[i]?.wind) || 0;
 
         //write prices / timestamps to their data points
         await Promise.all(
@@ -316,8 +383,9 @@ async function main() {
             ,adapter.setStateAsync(stateBaseName + "nettoPriceKwh", nettoPriceKwh, true)
             ,adapter.setStateAsync(stateBaseName + "nettoFullPriceKwh", nettoFullPriceKwh, true)
             ,adapter.setStateAsync(stateBaseName + "bruttoPriceKwh", bruttoPriceKwh, true)
-            ,adapter.setStateAsync(stateBaseName + "totalPriceKwh", toalPriceKwh, true)
             ,adapter.setStateAsync(stateBaseName + "totalPriceKwh", totalPriceKwh, true)
+            ,adapter.setStateAsync(stateBaseName + "solar", solar, true)
+            ,adapter.setStateAsync(stateBaseName + "wind", wind, true)
             ])
     }
 
